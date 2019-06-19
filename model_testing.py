@@ -1,4 +1,5 @@
 import glob
+import os
 
 import matplotlib
 import numpy as np
@@ -6,6 +7,7 @@ import pandas as pd
 from PyFingerprint.All_Fingerprint import get_fingerprint
 from prettytable import PrettyTable
 from rdkit import Chem
+from operator import itemgetter
 from rdkit.Avalon.pyAvalonTools import GetAvalonFP
 from rdkit.Chem import Descriptors, MACCSkeys, AllChem
 from rdkit.Chem.EState.Fingerprinter import FingerprintMol
@@ -22,12 +24,10 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVR
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
 from Fingerprint_test import BitVect_to_NumpyArray
-
-matplotlib.use("TkAgg")
-
 
 class trainModels:
     def __init__(self,X,y):
@@ -192,21 +192,34 @@ def plot_learning_curve(X, fig, k, model, name, y):
     ax.set_ylim([-0.05, 1.05])
 
 
-def main():
-    data = pd.read_csv('forSnigdha.csv')
-    # Add some new columns
-    data['Mol'] = data['SMILES'].apply(Chem.MolFromSmiles)
+def charge_featurizer(data,pos):
+    chargeList = data['Charges'][pos]
+    try:
+        maxPositiveCharge = max(chargeList,key=itemgetter(1))[1]
+    except:
+        print(data['Inchi-Key'][pos])
+    maxNegativeCharge = min(chargeList,key=itemgetter(1))[1]
+    totalPositiveCharge = sum(x[1] for x in chargeList if x[1] > 0)
+    totalNegativeCharge = sum(x[1] for x in chargeList if x[1] < 0)
+    absAtomicCharge = sum(abs(x[1]) for x in chargeList)/len(chargeList)
+    return [maxPositiveCharge,maxNegativeCharge,totalPositiveCharge,totalNegativeCharge,absAtomicCharge]
 
-    y = data['HOMO'].values
-    y = y*27.211
+def addCharge(data):
+    for i in range(len(data['Inchi-Key'])):
+        chargeDescriptor = charge_featurizer(data,i)
+        data['Fingerprint'][i] = np.concatenate([data['Fingerprint'][i], np.array(chargeDescriptor)])
+    return data['Fingerprint']
+
+def make_fingerprint(data):
     # data['Fingerprint'] = data['Mol'].apply(estate_fingerprint)
     # data['Fingerprint'] = data['Mol'].apply(lambda x: GetAvalonFP(x))
-    # data['Fingerprint'] = data['Mol'].apply(torsionFingerprint)
+    data['Fingerprint'] = data['Mol'].apply(torsionFingerprint)
+    data['Fingerprint'] = addCharge(data)
     # data['Fingerprint'] = data['SMILES'].apply(pubChemFP)
     # data['Fingerprint'] = data['Mol'].apply(lambda x: GetErGFingerprint(x))
-    data['Fingerprint'] = data['Mol'].apply(lambda x: MACCSkeys.GenMACCSKeys(x))
+    # data['Fingerprint'] = data['Mol'].apply(lambda x: MACCSkeys.GenMACCSKeys(x))
 
-    #3D
+    # 3D
     # data['Conformer'] = data['Mol'].apply(Chem.rdmolops.RemoveHs)
     # ## Adding conformer
     # path = '../FileConversion/PDBFiles/'
@@ -223,6 +236,42 @@ def main():
     #             print('error' +str(e))
     #             AllChem.EmbedMolecule(data['Conformer'][i])
     # data['Fingerprint'] = data['Conformer'].apply(lambda x: Generate.Gen2DFingerprint(x,Gobbi_Pharm2D.factory,dMat=Chem.Get3DDistanceMatrix(x)))
+    return data['Fingerprint']
+
+def populateCharges(data):
+    path = "../LogFiles/"
+
+    data['Charges'] = np.empty((len(data), 0)).tolist()
+    for i in range(len(data['Inchi-Key'])):
+        val = data['Inchi-Key'][i]
+        chargeList = []
+        for file in glob.glob(path+val+'*.log'):
+            with open(path + file) as fp:
+                start_store = 0
+                for line in fp:
+                    if "Mulliken charges" in line and "hydrogens summed into heavy atoms:" in line:
+                        start_store = 1
+                        break
+                if start_store == 1:
+                    fp.readline()  # ignoring line with 1 and 2
+                    for line in fp:
+                        parts = line.split()
+                        if parts[0] == 'Electronic':  # stopping point
+                            break
+                        chargeList.append((parts[1], float(parts[2])))
+        data['Charges'][i] = chargeList
+    return data['Charges']
+
+
+def main():
+    data = pd.read_csv('forSnigdha.csv')
+    # Add some new columns
+    data['Mol'] = data['SMILES'].apply(Chem.MolFromSmiles)
+    data['Charges'] = populateCharges(data)
+
+    y = data['HOMO'].values
+    y = y*27.211
+    data['Fingerprint'] = make_fingerprint(data)
     X = np.array(list(data['Fingerprint']))
 
     st = StandardScaler()
